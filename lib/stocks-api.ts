@@ -1,38 +1,59 @@
 import { StockQuote } from '@/types'
 
-// Yahoo Finance API using direct fetch (no external package)
-// This avoids build issues with yahoo-finance2
+// Finnhub API - Free tier with 60 calls/minute
+// Get your free API key at https://finnhub.io/
 
-interface YahooQuoteResponse {
-  quoteResponse: {
-    result: {
-      symbol: string
-      shortName?: string
-      longName?: string
-      regularMarketPrice: number
-      regularMarketChange: number
-      regularMarketChangePercent: number
-      regularMarketPreviousClose: number
-      regularMarketOpen: number
-      regularMarketDayHigh: number
-      regularMarketDayLow: number
-      regularMarketVolume: number
-      marketCap?: number
-    }[]
-    error: null | string
+const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY || ''
+
+export async function getStockQuote(symbol: string): Promise<StockQuote | null> {
+  // Try Finnhub first (more reliable from serverless)
+  if (FINNHUB_API_KEY) {
+    const quote = await getStockQuoteFinnhub(symbol)
+    if (quote) return quote
+  }
+
+  // Fallback to Yahoo Finance
+  return getStockQuoteYahoo(symbol)
+}
+
+async function getStockQuoteFinnhub(symbol: string): Promise<StockQuote | null> {
+  try {
+    const response = await fetch(
+      `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(symbol)}&token=${FINNHUB_API_KEY}`,
+      { cache: 'no-store' }
+    )
+
+    if (!response.ok) {
+      console.error(`Finnhub API error: ${response.status}`)
+      return null
+    }
+
+    const data = await response.json()
+
+    // Finnhub returns c=0 for invalid symbols
+    if (!data.c || data.c === 0) {
+      return null
+    }
+
+    return {
+      symbol: symbol.toUpperCase(),
+      name: symbol.toUpperCase(),
+      price: data.c, // Current price
+      change: data.d, // Change
+      changePercent: data.dp, // Change percent
+      previousClose: data.pc,
+      open: data.o,
+      dayHigh: data.h,
+      dayLow: data.l,
+      volume: 0, // Not included in basic quote
+    }
+  } catch (error) {
+    console.error(`Error fetching Finnhub quote for ${symbol}:`, error)
+    return null
   }
 }
 
-interface YahooSearchResponse {
-  quotes: {
-    symbol: string
-    shortname?: string
-    longname?: string
-    quoteType?: string
-  }[]
-}
-
-export async function getStockQuote(symbol: string): Promise<StockQuote | null> {
+async function getStockQuoteYahoo(symbol: string): Promise<StockQuote | null> {
   try {
     const response = await fetch(
       `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbol)}`,
@@ -40,7 +61,7 @@ export async function getStockQuote(symbol: string): Promise<StockQuote | null> 
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         },
-        next: { revalidate: 60 }, // Cache for 60 seconds
+        cache: 'no-store',
       }
     )
 
@@ -49,7 +70,7 @@ export async function getStockQuote(symbol: string): Promise<StockQuote | null> 
       return null
     }
 
-    const data: YahooQuoteResponse = await response.json()
+    const data = await response.json()
 
     if (!data.quoteResponse?.result?.[0]) {
       return null
@@ -71,7 +92,7 @@ export async function getStockQuote(symbol: string): Promise<StockQuote | null> 
       marketCap: quote.marketCap,
     }
   } catch (error) {
-    console.error(`Error fetching quote for ${symbol}:`, error)
+    console.error(`Error fetching Yahoo quote for ${symbol}:`, error)
     return null
   }
 }
@@ -81,49 +102,44 @@ export async function getMultipleQuotes(symbols: string[]): Promise<Map<string, 
 
   if (symbols.length === 0) return quotes
 
-  try {
-    const response = await fetch(
-      `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbols.join(','))}`,
-      {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        },
-        next: { revalidate: 60 },
-      }
-    )
-
-    if (!response.ok) {
-      console.error(`Yahoo Finance API error: ${response.status}`)
-      return quotes
+  // Fetch quotes one by one (Finnhub doesn't support batch in free tier)
+  for (const symbol of symbols) {
+    const quote = await getStockQuote(symbol)
+    if (quote) {
+      quotes.set(symbol, quote)
     }
-
-    const data: YahooQuoteResponse = await response.json()
-
-    if (data.quoteResponse?.result) {
-      for (const quote of data.quoteResponse.result) {
-        quotes.set(quote.symbol, {
-          symbol: quote.symbol,
-          name: quote.shortName || quote.longName || quote.symbol,
-          price: quote.regularMarketPrice,
-          change: quote.regularMarketChange,
-          changePercent: quote.regularMarketChangePercent,
-          previousClose: quote.regularMarketPreviousClose,
-          open: quote.regularMarketOpen,
-          dayHigh: quote.regularMarketDayHigh,
-          dayLow: quote.regularMarketDayLow,
-          volume: quote.regularMarketVolume,
-          marketCap: quote.marketCap,
-        })
-      }
-    }
-  } catch (error) {
-    console.error('Error fetching multiple quotes:', error)
   }
 
   return quotes
 }
 
 export async function searchStocks(query: string): Promise<{ symbol: string; name: string }[]> {
+  // Try Finnhub search first
+  if (FINNHUB_API_KEY) {
+    try {
+      const response = await fetch(
+        `https://finnhub.io/api/v1/search?q=${encodeURIComponent(query)}&token=${FINNHUB_API_KEY}`,
+        { cache: 'no-store' }
+      )
+
+      if (response.ok) {
+        const data = await response.json()
+        if (data.result && data.result.length > 0) {
+          return data.result
+            .filter((r: any) => r.type === 'Common Stock')
+            .slice(0, 10)
+            .map((r: any) => ({
+              symbol: r.symbol,
+              name: r.description || r.symbol,
+            }))
+        }
+      }
+    } catch (error) {
+      console.error('Finnhub search error:', error)
+    }
+  }
+
+  // Fallback to Yahoo search
   try {
     const response = await fetch(
       `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(query)}&quotesCount=10&newsCount=0`,
@@ -131,63 +147,25 @@ export async function searchStocks(query: string): Promise<{ symbol: string; nam
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         },
+        cache: 'no-store',
       }
     )
 
     if (!response.ok) {
-      console.error(`Yahoo Finance search error: ${response.status}`)
       return []
     }
 
-    const data: YahooSearchResponse = await response.json()
+    const data = await response.json()
 
     return (data.quotes || [])
-      .filter((q) => q.quoteType === 'EQUITY')
+      .filter((q: any) => q.quoteType === 'EQUITY')
       .slice(0, 10)
-      .map((q) => ({
+      .map((q: any) => ({
         symbol: q.symbol,
         name: q.shortname || q.longname || q.symbol,
       }))
   } catch (error) {
     console.error('Error searching stocks:', error)
     return []
-  }
-}
-
-// Alternative: Alpha Vantage API (requires API key)
-export async function getStockQuoteAlphaVantage(symbol: string): Promise<StockQuote | null> {
-  const apiKey = process.env.ALPHA_VANTAGE_API_KEY
-  if (!apiKey) {
-    console.error('Alpha Vantage API key not configured')
-    return null
-  }
-
-  try {
-    const response = await fetch(
-      `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${symbol}&apikey=${apiKey}`
-    )
-    const data = await response.json()
-
-    if (!data['Global Quote'] || Object.keys(data['Global Quote']).length === 0) {
-      return null
-    }
-
-    const quote = data['Global Quote']
-
-    return {
-      symbol: quote['01. symbol'],
-      name: symbol,
-      price: parseFloat(quote['05. price']),
-      change: parseFloat(quote['09. change']),
-      changePercent: parseFloat(quote['10. change percent'].replace('%', '')),
-      previousClose: parseFloat(quote['08. previous close']),
-      open: parseFloat(quote['02. open']),
-      dayHigh: parseFloat(quote['03. high']),
-      dayLow: parseFloat(quote['04. low']),
-      volume: parseInt(quote['06. volume']),
-    }
-  } catch (error) {
-    console.error(`Error fetching quote from Alpha Vantage for ${symbol}:`, error)
-    return null
   }
 }
