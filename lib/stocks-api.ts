@@ -1,30 +1,61 @@
 import { StockQuote } from '@/types'
 
-// Yahoo Finance API using yahoo-finance2 package
-// This runs on the server side
+// Yahoo Finance API using direct fetch (no external package)
+// This avoids build issues with yahoo-finance2
 
-interface YahooQuote {
-  symbol: string
-  shortName?: string
-  longName?: string
-  regularMarketPrice: number
-  regularMarketChange: number
-  regularMarketChangePercent: number
-  regularMarketPreviousClose: number
-  regularMarketOpen: number
-  regularMarketDayHigh: number
-  regularMarketDayLow: number
-  regularMarketVolume: number
-  marketCap?: number
+interface YahooQuoteResponse {
+  quoteResponse: {
+    result: {
+      symbol: string
+      shortName?: string
+      longName?: string
+      regularMarketPrice: number
+      regularMarketChange: number
+      regularMarketChangePercent: number
+      regularMarketPreviousClose: number
+      regularMarketOpen: number
+      regularMarketDayHigh: number
+      regularMarketDayLow: number
+      regularMarketVolume: number
+      marketCap?: number
+    }[]
+    error: null | string
+  }
+}
+
+interface YahooSearchResponse {
+  quotes: {
+    symbol: string
+    shortname?: string
+    longname?: string
+    quoteType?: string
+  }[]
 }
 
 export async function getStockQuote(symbol: string): Promise<StockQuote | null> {
   try {
-    // Using yahoo-finance2 package
-    const yahooFinance = (await import('yahoo-finance2')).default
-    const quote = await yahooFinance.quote(symbol) as YahooQuote
+    const response = await fetch(
+      `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbol)}`,
+      {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        },
+        next: { revalidate: 60 }, // Cache for 60 seconds
+      }
+    )
 
-    if (!quote) return null
+    if (!response.ok) {
+      console.error(`Yahoo Finance API error: ${response.status}`)
+      return null
+    }
+
+    const data: YahooQuoteResponse = await response.json()
+
+    if (!data.quoteResponse?.result?.[0]) {
+      return null
+    }
+
+    const quote = data.quoteResponse.result[0]
 
     return {
       symbol: quote.symbol,
@@ -48,17 +79,45 @@ export async function getStockQuote(symbol: string): Promise<StockQuote | null> 
 export async function getMultipleQuotes(symbols: string[]): Promise<Map<string, StockQuote>> {
   const quotes = new Map<string, StockQuote>()
 
-  // Fetch quotes in parallel with a limit
-  const batchSize = 5
-  for (let i = 0; i < symbols.length; i += batchSize) {
-    const batch = symbols.slice(i, i + batchSize)
-    const results = await Promise.all(batch.map(getStockQuote))
+  if (symbols.length === 0) return quotes
 
-    results.forEach((quote, index) => {
-      if (quote) {
-        quotes.set(batch[index], quote)
+  try {
+    const response = await fetch(
+      `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbols.join(','))}`,
+      {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        },
+        next: { revalidate: 60 },
       }
-    })
+    )
+
+    if (!response.ok) {
+      console.error(`Yahoo Finance API error: ${response.status}`)
+      return quotes
+    }
+
+    const data: YahooQuoteResponse = await response.json()
+
+    if (data.quoteResponse?.result) {
+      for (const quote of data.quoteResponse.result) {
+        quotes.set(quote.symbol, {
+          symbol: quote.symbol,
+          name: quote.shortName || quote.longName || quote.symbol,
+          price: quote.regularMarketPrice,
+          change: quote.regularMarketChange,
+          changePercent: quote.regularMarketChangePercent,
+          previousClose: quote.regularMarketPreviousClose,
+          open: quote.regularMarketOpen,
+          dayHigh: quote.regularMarketDayHigh,
+          dayLow: quote.regularMarketDayLow,
+          volume: quote.regularMarketVolume,
+          marketCap: quote.marketCap,
+        })
+      }
+    }
+  } catch (error) {
+    console.error('Error fetching multiple quotes:', error)
   }
 
   return quotes
@@ -66,13 +125,26 @@ export async function getMultipleQuotes(symbols: string[]): Promise<Map<string, 
 
 export async function searchStocks(query: string): Promise<{ symbol: string; name: string }[]> {
   try {
-    const yahooFinance = (await import('yahoo-finance2')).default
-    const results = await yahooFinance.search(query)
+    const response = await fetch(
+      `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(query)}&quotesCount=10&newsCount=0`,
+      {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        },
+      }
+    )
 
-    return results.quotes
-      .filter((q: { quoteType?: string }) => q.quoteType === 'EQUITY')
+    if (!response.ok) {
+      console.error(`Yahoo Finance search error: ${response.status}`)
+      return []
+    }
+
+    const data: YahooSearchResponse = await response.json()
+
+    return (data.quotes || [])
+      .filter((q) => q.quoteType === 'EQUITY')
       .slice(0, 10)
-      .map((q: { symbol: string; shortname?: string; longname?: string }) => ({
+      .map((q) => ({
         symbol: q.symbol,
         name: q.shortname || q.longname || q.symbol,
       }))
@@ -104,7 +176,7 @@ export async function getStockQuoteAlphaVantage(symbol: string): Promise<StockQu
 
     return {
       symbol: quote['01. symbol'],
-      name: symbol, // Alpha Vantage doesn't return company name in this endpoint
+      name: symbol,
       price: parseFloat(quote['05. price']),
       change: parseFloat(quote['09. change']),
       changePercent: parseFloat(quote['10. change percent'].replace('%', '')),
