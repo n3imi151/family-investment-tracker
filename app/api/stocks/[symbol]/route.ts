@@ -6,7 +6,7 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ symbol: string }> }
 ) {
-  const supabase = createClient()
+  const supabase = await createClient()
   const { symbol: rawSymbol } = await params
   const symbol = rawSymbol.toUpperCase()
 
@@ -48,7 +48,7 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ symbol: string }> }
 ) {
-  const supabase = createClient()
+  const supabase = await createClient()
   const { symbol: rawSymbol } = await params
   const symbol = rawSymbol.toUpperCase()
 

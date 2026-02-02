@@ -20,7 +20,7 @@ export async function GET(request: NextRequest) {
   }
 
   // Return all stocks from database
-  const supabase = createClient()
+  const supabase = await createClient()
   const { data, error } = await supabase
     .from("stocks")
     .select("*")
@@ -34,7 +34,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const supabase = createClient()
+  const supabase = await createClient()
 
   // Check if user is admin
   const {

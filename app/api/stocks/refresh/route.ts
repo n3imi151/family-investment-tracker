@@ -3,7 +3,7 @@ import { createClient } from "@/lib/supabase/server"
 import { getStockQuote } from "@/lib/stocks-api"
 
 export async function POST() {
-  const supabase = createClient()
+  const supabase = await createClient()
 
   // Check if user is authenticated
   const {

@@ -6,7 +6,7 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ symbol: string }> }
 ) {
-  const supabase = createClient()
+  const supabase = await createClient()
   const { symbol: rawSymbol } = await params
   const symbol = rawSymbol.toUpperCase()
 
