@@ -4,10 +4,11 @@ import { getStockQuote } from "@/lib/stocks-api"
 
 export async function POST(
   request: NextRequest,
-  { params }: { params: { symbol: string } }
+  { params }: { params: Promise<{ symbol: string }> }
 ) {
   const supabase = createClient()
-  const symbol = params.symbol.toUpperCase()
+  const { symbol: rawSymbol } = await params
+  const symbol = rawSymbol.toUpperCase()
 
   // Check if user is authenticated
   const {
